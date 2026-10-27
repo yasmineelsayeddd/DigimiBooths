@@ -32,9 +32,11 @@ CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O or 1/I lookalikes
 # PINs and the database URL come from Streamlit secrets (.streamlit/secrets.toml locally,
 # or the app's Secrets settings on Streamlit Cloud) so they never live in the repo.
 try:
-    SECRETS = st.secrets.to_dict()
-except Exception:  # no secrets file: run with a local db and locked host/admin pages
-    SECRETS = {}
+    SECRETS, SECRETS_PROBLEM = st.secrets.to_dict(), None
+except Exception as e:  # no secrets, or unreadable: run with a local db and locked host/admin pages
+    SECRETS, SECRETS_PROBLEM = {}, f"{type(e).__name__}: {e}".splitlines()[0][:200]
+if not SECRETS_PROBLEM and not SECRETS:
+    SECRETS_PROBLEM = "The app's Secrets are empty."
 HOST_PINS = {g: str(SECRETS.get("host_pins", {}).get(g, "")) for g in GAMES}
 ADMIN_PIN = str(SECRETS.get("admin_pin", ""))
 # Postgres (e.g. Supabase) in production so scores survive app restarts; local file otherwise.
@@ -569,6 +571,10 @@ def pin_form(form_key, label, expected, on_ok):
                 on_ok()
                 st.rerun()
             say("Wrong PIN." if expected else "No PIN is set for this. Add it in the app's secrets.")
+    if SECRETS_PROBLEM or "db_url" not in SECRETS:
+        # Shown only on the PIN screens, so hosts and the organiser see why nothing unlocks.
+        html(f'<div class="hint" style="margin-top:10px">Setup problem: {esc(SECRETS_PROBLEM or "no db_url in Secrets")}. '
+             'Scores are being kept in a temporary file, not the database.</div>')
 
 
 def host_page():
