@@ -41,6 +41,8 @@ HOST_PINS = {g: str(SECRETS.get("host_pins", {}).get(g, "")) for g in GAMES}
 ADMIN_PIN = str(SECRETS.get("admin_pin", ""))
 # Postgres (e.g. Supabase) in production so scores survive app restarts; local file otherwise.
 DB_URL = SECRETS.get("db_url", "sqlite:///event.db")
+# Name the driver (psycopg 3) explicitly: SQLAlchemy versions disagree on the default for postgresql://.
+DB_URL = re.sub(r"^postgres(ql)?://", "postgresql+psycopg://", DB_URL)
 REFRESH_SECONDS = 3
 
 
