@@ -18,6 +18,7 @@ import re
 import secrets
 import threading
 import time
+from html import escape
 
 import pandas as pd
 import streamlit as st
@@ -203,12 +204,181 @@ def minutes_since(joined_at):
     return 0 if pd.isna(joined_at) else int((time.time() - joined_at) // 60)
 
 
+# ---------- look (the "Broadsheet" design: Game Event App.html) ----------
+STALE_MINUTES = 40
+NUMBER_WORDS = {3: "three", 4: "four", 5: "five", 6: "six"}
+
+CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap');
+@import url('https://unpkg.com/@phosphor-icons/web@2.1.1/src/duotone/style.css');
+
+:root {
+  --color-bg: #f3f2f2; --color-surface: #eae9e9; --color-text: #201e1d;
+  --color-accent: #0088b0; --color-accent-2: #d6006c;
+  --color-divider: color-mix(in srgb, #201e1d 16%, transparent);
+  --color-neutral-100: #f8f4f4; --color-neutral-200: #eae7e7; --color-neutral-800: #444141;
+  --color-accent-100: #e9f8ff; --color-accent-600: #1186ac; --color-accent-700: #006786; --color-accent-800: #004961;
+  --color-accent-2-100: #fff1f4; --color-accent-2-700: #aa0b56; --color-accent-2-800: #790e3d;
+  --color-process-yellow: #edbb00;
+  --font: "Source Serif 4", Georgia, serif;
+  --radius-md: 2px;
+  --shadow-md: 0 3px 10px color-mix(in srgb, #2d2b2b 16%, transparent);
+}
+
+/* page frame: one phone-width column, no Streamlit chrome */
+.stApp { background: var(--color-bg); color: var(--color-text); }
+.stApp, .stApp button, .stApp input, [data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p,
+[data-testid="stToast"] { font-family: var(--font); }
+[data-testid="stHeader"], [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"],
+[data-testid="stDecoration"], footer { display: none !important; }
+[data-testid="stMainBlockContainer"], .block-container {
+  max-width: 480px; padding: 28px 24px 140px !important; }
+[data-testid="stVerticalBlock"] { gap: 14px; }
+[data-testid="stMarkdownContainer"] p { margin: 0; }
+[data-testid="stForm"] { border: 0; padding: 0; }
+/* style-only blocks take no room */
+[data-testid="stElementContainer"]:has(style), .stMarkdown:has(style) { display: none; }
+
+/* keep button rows side by side on phones (Streamlit stacks columns under 640px) */
+[data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 8px !important; align-items: center; }
+[data-testid="stColumn"] { min-width: 0 !important; }
+
+/* text */
+.kicker { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--color-accent-700);
+  display: flex; align-items: center; gap: 8px; }
+.kicker .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-accent-2); }
+.display { font-weight: 600; line-height: 1.1; text-wrap: pretty; }
+.muted { opacity: .65; }
+.field-label { font-size: 13px; opacity: .75; margin-bottom: -6px; }
+.hint { font-size: 13px; opacity: .65; line-height: 1.4; margin-bottom: 6px; }
+.status { display: flex; gap: 10px; align-items: flex-start; font-size: 15px; line-height: 1.45; }
+.status i { font-size: 22px; color: var(--color-accent-2); flex: none; margin-top: 1px; }
+.lockline { display: flex; gap: 10px; align-items: center; font-size: 15px; }
+.lockline i { font-size: 22px; color: var(--color-accent); }
+
+/* buttons */
+.stApp button { border-radius: var(--radius-md) !important; font-weight: 600; min-height: 44px; box-shadow: none !important; }
+.stApp button p { font-family: var(--font); font-weight: 600; font-size: 15px; }
+button[data-testid^="stBaseButton-primary"] { background: var(--color-accent); border: 1px solid var(--color-accent); color: var(--color-bg); }
+button[data-testid^="stBaseButton-primary"]:hover { background: var(--color-accent-600); border-color: var(--color-accent-600); color: var(--color-bg); }
+button[data-testid^="stBaseButton-secondary"] { background: transparent; border: 1px solid var(--color-divider); color: var(--color-text); }
+button[data-testid^="stBaseButton-secondary"]:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent);
+  border-color: var(--color-divider); color: var(--color-text); }
+button[data-testid="stBaseButton-tertiary"] { color: var(--color-accent); padding: 0 5px; }
+button[data-testid="stBaseButton-tertiary"]:hover { background: color-mix(in srgb, var(--color-accent) 10%, transparent); color: var(--color-accent); }
+.stApp button:disabled, .stApp button:disabled:hover { opacity: .45; }
+button[data-testid^="stBaseButton-primary"]:disabled { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-bg); }
+button[data-testid^="stBaseButton-secondary"]:disabled { background: transparent; border-color: var(--color-divider); color: var(--color-text); }
+.st-key-signout button p { font-size: 13px; }
+.st-key-signout { align-items: flex-end; }
+[class*="st-key-remove-"] button, [class*="st-key-remove-"] button:hover,
+[class*="st-key-danger-"] button, [class*="st-key-danger-"] button:hover { color: var(--color-accent-2-700) !important; }
+
+/* inputs */
+[data-testid="stTextInput"] [data-baseweb="input"] { background: var(--color-surface); border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md); min-height: 48px; }
+[data-testid="stTextInput"] [data-baseweb="input"]:focus-within { border-color: var(--color-accent); }
+[data-testid="stTextInput"] input { font-size: 17px; background: transparent; caret-color: var(--color-accent); }
+[data-testid="stTextInput"] input::placeholder { color: color-mix(in srgb, var(--color-text) 65%, transparent); }
+[data-testid="InputInstructions"] { display: none; }
+.st-key-code input { text-transform: uppercase; letter-spacing: .15em; }
+.st-key-pin input { font-size: 20px; letter-spacing: .3em; }
+
+/* game cards */
+[class*="st-key-card-"] { background: var(--color-surface); border-radius: var(--radius-md); padding: 15px; gap: 12px; }
+.card-head { display: flex; justify-content: space-between; align-items: center; }
+.card-title { font-weight: 600; font-size: 20px; line-height: 1.2; }
+.seatbar { height: 4px; background: var(--color-neutral-200); border-radius: 2px; overflow: hidden; margin: 2px 0 5px; }
+.seatbar div { height: 100%; background: var(--color-accent); }
+.tag { display: inline-flex; align-items: center; font-size: 11px; letter-spacing: .02em; padding: 3px 10px; border-radius: 1.5px; }
+.tag-accent { background: var(--color-accent-100); color: var(--color-accent-800); }
+.tag-accent-2 { background: var(--color-accent-2-100); color: var(--color-accent-2-800); }
+.tag-neutral { background: var(--color-neutral-100); color: var(--color-neutral-800); }
+
+/* tables */
+.table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.table th { text-align: left; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent); padding: 10px; border-bottom: 1px solid var(--color-divider); }
+.table td { padding: 10px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); }
+.table tr:hover td { background: color-mix(in srgb, var(--color-text) 4%, transparent); }
+.num { text-align: right; }
+
+/* the plate numeral: a score printed as misregistered cyan, magenta and yellow plates */
+.cmyk-num { --ground: var(--color-bg); position: relative; width: fit-content; line-height: .9; font-weight: 600;
+  font-feature-settings: "pnum" 1; background: var(--ground); padding: .12em; margin: -.12em; }
+.cmyk-num .paper { color: var(--color-bg); text-shadow: .036em .025em 0 var(--color-bg), -.031em -.023em 0 var(--color-bg); }
+.cmyk-num .plate { position: absolute; inset: .12em; mix-blend-mode: multiply; text-box: trim-both cap alphabetic; }
+.cmyk-num .plate-c { color: var(--color-accent); }
+.cmyk-num .plate-m { color: var(--color-accent-2); translate: .036em .025em; }
+.cmyk-num .plate-y { color: var(--color-process-yellow); translate: -.031em -.023em; }
+
+/* bottom tab bar */
+.st-key-tabbar { position: fixed; bottom: 0; left: 50%; transform: translateX(-50%); width: min(100%, 480px); z-index: 1000;
+  background: var(--color-bg); box-shadow: 0 -1px 0 var(--color-divider); padding: 6px 12px 22px; }
+.st-key-tabbar [data-testid="stHorizontalBlock"] { gap: 0 !important; }
+.st-key-tabbar button { min-height: 54px; width: 100%; padding: 0;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent) !important; background: none !important; }
+.st-key-tabbar button { flex-direction: column; gap: 2px; }
+.st-key-tabbar button p { font-size: 11px; font-weight: 400; letter-spacing: .04em; }
+.st-key-tabbar button [data-testid="stIconMaterial"] { font-size: 26px; }
+
+/* toasts */
+[data-testid="stToast"] { background: var(--color-surface); color: var(--color-text); border-radius: var(--radius-md); box-shadow: var(--shadow-md); }
+</style>
+"""
+
+TABS = [("player", "Play", ":material/style:"), ("board", "Board", ":material/trophy:"),
+        ("host", "Host", ":material/flag:"), ("admin", "Admin", ":material/build:")]
+
+
+def html(markup):
+    st.markdown(markup, unsafe_allow_html=True)
+
+
+def esc(value):
+    return escape(str(value))
+
+
+def kicker(label, dot=False):
+    html(f'<div class="kicker">{"<span class=dot></span>" if dot else ""}{esc(label)}</div>')
+
+
+def plate_number(value, size):
+    v = esc(value)
+    plates = "".join(f'<span class="plate plate-{c}" aria-hidden="true">{v}</span>' for c in "cmy")
+    return f'<div class="cmyk-num" style="font-size:{size}px"><span class="paper">{v}</span>{plates}</div>'
+
+
+def say(message, icon=":material/error:", rerun=False):
+    """Show a toast; when the page is about to rerun, hold it until the next run draws."""
+    if rerun:
+        st.session_state.setdefault("toasts", []).append((message, icon))
+        st.rerun()
+    st.toast(message, icon=icon)
+
+
+def tab_bar():
+    # ?view=board in the link opens straight on that tab, e.g. for the big screen.
+    linked = st.query_params.get("view", "player")
+    view = st.session_state.setdefault("view", linked if linked in dict((k, 0) for k, *_ in TABS) else "player")
+    with st.container(key="tabbar"):
+        for col, (key, label, icon) in zip(st.columns(len(TABS)), TABS):
+            if col.button(label, icon=icon, key=f"tab-{key}", type="tertiary"):
+                st.session_state["view"] = view = key
+    html(f"<style>.st-key-tab-{view} button {{ color: var(--color-accent) !important; }}"
+         + (".block-container, [data-testid=stMainBlockContainer] { max-width: 760px; }" if view == "board" else "")
+         + "</style>")
+    return view
+
+
 # ---------- pages ----------
 def leaderboard_page():
-    st.title("🏆 Universal Leaderboard")
-
     @st.fragment(run_every=REFRESH_SECONDS)
     def live_board():
+        is_open = event_open()
+        kicker("Live · updates as hosts score" if is_open else "Event closed · final scores", dot=True)
+        html('<div class="display" style="font-size:32px">Universal leaderboard</div>')
         # Players who signed up but never joined a game stay off the board.
         df = query(
             "SELECT p.name, p.score, p.current_game, COUNT(pl.game) AS games "
@@ -217,22 +387,37 @@ def leaderboard_page():
             "HAVING p.current_game IS NOT NULL OR p.score <> 0 OR COUNT(pl.game) > 0 "
             "ORDER BY p.score DESC, p.name"
         )
-        if not event_open():
-            st.info("The event is closed. These are the final scores.")
         if df.empty:
-            st.info("No players yet.")
+            html('<div class="muted" style="font-size:15px">No players yet.</div>')
             return
-        df.insert(0, "Rank", df["score"].rank(method="min", ascending=False).astype(int))
-        df["current_game"] = df["current_game"].fillna("—")
-        df["games"] = df["games"].astype(str) + f"/{len(GAMES)}"
-        df.columns = ["Rank", "Player", "Score", "Now playing", "Games played"]
+        df["rank"] = df["score"].rank(method="min", ascending=False).astype(int)
+        df["now"] = df["current_game"].where(df["current_game"].notna(), None)
 
-        top = df.head(3)
-        for col, (_, row), medal in zip(st.columns(3), top.iterrows(), ["🥇", "🥈", "🥉"]):
-            col.metric(f"{medal} {row['Player']}", row["Score"])
-
-        st.dataframe(df, hide_index=True, width='stretch', height=600)
-        st.caption(f"Auto-refreshes every {REFRESH_SECONDS}s")
+        lead = df.iloc[0]
+        now = f"Now in {lead['now']}" if lead["now"] else "Between games"
+        runners = "".join(
+            f'<div><div class="muted" style="font-size:13px">{place}</div>'
+            f'<div style="display:flex;align-items:baseline;gap:10px"><span class="display" style="font-size:30px">{int(r["score"])}</span>'
+            f'<span style="font-size:15px">{esc(r["name"])}</span></div></div>'
+            for place, (_, r) in zip(["Second", "Third"], df.iloc[1:3].iterrows())
+        )
+        html(
+            '<div style="display:flex;flex-direction:column;gap:18px;margin:6px 0 4px">'
+            '<div style="display:flex;justify-content:space-between;align-items:flex-end">'
+            f'<div style="display:flex;flex-direction:column;gap:4px"><div class="muted" style="font-size:13px">First place</div>'
+            f'<div class="display" style="font-size:26px">{esc(lead["name"])}</div><div class="muted" style="font-size:13px">{now}</div></div>'
+            f'{plate_number(int(lead["score"]), 88)}</div>'
+            f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">{runners}</div></div>'
+        )
+        rows = "".join(
+            f'<tr><td class="muted">{r["rank"]}</td><td style="font-weight:{600 if r["rank"] <= 3 else 400}">{esc(r["name"])}</td>'
+            f'<td style="opacity:.7">{esc(r["now"].replace("Game ", "G")) if r["now"] else "—"}</td>'
+            f'<td class="num" style="opacity:.7">{int(r["games"])}/{len(GAMES)}</td>'
+            f'<td class="num" style="font-weight:600">{int(r["score"])}</td></tr>'
+            for _, r in df.iterrows()
+        )
+        html('<table class="table"><thead><tr><th style="width:28px">#</th><th>Player</th><th>Now</th>'
+             f'<th class="num">Played</th><th class="num">Pts</th></tr></thead><tbody>{rows}</tbody></table>')
 
     live_board()
 
@@ -250,29 +435,38 @@ def signed_in_player():
 
 
 def sign_up():
-    with st.form("signup"):
-        raw = st.text_input("Your name", max_chars=NAME_MAX, placeholder="e.g. Sara K")
-        st.caption("You can't change your name after this, so check the spelling.")
-        if st.form_submit_button("Start", type="primary"):
+    tables = NUMBER_WORDS.get(len(GAMES), len(GAMES))
+    kicker(f"Game night · {tables} tables")
+    html('<div class="display" style="font-size:36px;line-height:1.08;margin-bottom:14px">'
+         'Play every game. One score follows you around the room.</div>')
+
+    with st.form("signup", border=False):
+        html('<div class="field-label">Your name</div>')
+        raw = st.text_input("Your name", max_chars=NAME_MAX, placeholder="e.g. Sara K", label_visibility="collapsed")
+        html('<div class="hint">You can\'t change your name after this, so check the spelling.</div>')
+        if st.form_submit_button("Start", type="primary", width="stretch"):
             _, code, err = create_player(raw)
             if err:
-                st.error(err)
+                say(err)
             else:
                 st.query_params["p"] = code
-                st.rerun()
+                say(f"You're in. Your code is {code}; use it to get back in on another phone.", ":material/key:", rerun=True)
 
-    with st.expander("Already signed up? Enter your code"):
-        code = st.text_input("Your code", max_chars=6).strip().upper()
-        if code:
+    with st.form("code-login", border=False):
+        html('<div class="field-label" style="margin-top:14px">Already signed up? Enter your code</div>')
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            code = st.text_input("Your code", max_chars=6, placeholder="6 letters", key="code",
+                                 label_visibility="collapsed").strip().upper()
+        if c2.form_submit_button("Go", width="stretch") and code:
             if query("SELECT 1 FROM players WHERE token = ?", (code,)).empty:
-                st.error("No player with that code.")
+                say("No player with that code.")
             else:
                 st.query_params["p"] = code
                 st.rerun()
 
 
 def player_page():
-    st.title("🃏 Pick your next game")
     pid = signed_in_player()
     if pid is None:
         sign_up()
@@ -282,8 +476,9 @@ def player_page():
     def cards():
         me = query("SELECT name, score, current_game, token FROM players WHERE id = ?", (pid,))
         if me.empty:  # removed by the admin
-            st.error("Your player was removed. Ask the organiser.")
-            if st.button("Sign up again"):
+            html('<div class="display" style="font-size:26px;padding-top:40px">Your player was removed.</div>'
+                 '<div style="font-size:15px;opacity:.75">Ask the organiser.</div>')
+            if st.button("Sign up again", type="primary", width="stretch"):
                 del st.query_params["p"]
                 st.rerun()
             return
@@ -297,74 +492,126 @@ def player_page():
         locked = locked_games()
         is_open = event_open()
 
-        st.subheader(f"👤 {name}")
-        st.write(f"Score **{int(score)}** · played {len(played)}/{len(GAMES)}")
-        st.caption(f"Your code: **{code}**. Bookmark this page, or use the code to get back in on another phone.")
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            kicker("Pick your next game")
+        if c2.button("Sign out", type="tertiary", key="signout"):
+            del st.query_params["p"]
+            st.rerun()
+        html(
+            '<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:16px">'
+            f'<div style="display:flex;flex-direction:column;gap:4px"><div class="display" style="font-size:30px">{esc(name)}</div>'
+            f'<div style="font-size:14px;opacity:.75">Played {len(played)} of {len(GAMES)} · code '
+            f'<strong style="letter-spacing:.1em">{esc(code)}</strong></div></div>'
+            '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">'
+            f'{plate_number(int(score), 64)}'
+            '<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;opacity:.6">Points</div></div></div>'
+        )
+
+        status = None
         if not is_open:
-            st.warning("The event isn't open right now. The cards unlock when it starts.")
-        if current:
-            st.success(f"You're in **{current}**. Your host will finish you when the game ends.")
-            if current not in locked:
-                st.caption("Joined the wrong game? You can leave until it starts.")
+            status = ("ph-pause-circle", "The event isn't open right now. Games unlock when it starts.")
+        elif current:
+            status = ("ph-play-circle", f"You're playing {current}. Your host will finish you when it ends."
+                      if current in locked else f"You're seated in {current}. You can leave until the host starts it.")
         elif len(played) == len(GAMES):
+            status = ("ph-confetti", "You've played every game.")
             if not st.session_state.get("celebrated"):
                 st.balloons()
                 st.session_state["celebrated"] = True
-            st.success("You've played every game! 🎉")
+        if status:
+            html(f'<div class="status"><i class="ph-duotone {status[0]}"></i><span>{esc(status[1])}</span></div>')
 
-        for col, game in zip(st.columns(len(GAMES)), GAMES):
+        for game in GAMES:
             seats = int(counts.get(game, 0))
-            with col.container(border=True):
-                st.subheader(game)
-                st.progress(seats / MAX_PER_GAME, text=f"{seats}/{MAX_PER_GAME} seats")
-                if game == current:
-                    st.button("▶ Playing now", key=f"j{game}", disabled=True, width="stretch")
-                    if game not in locked and st.button("Leave", key=f"l{game}", width="stretch"):
-                        err = leave_game(pid)
-                        st.error(err) if err else st.rerun()
-                elif game in played:
-                    st.button("✅ Played", key=f"j{game}", disabled=True, width="stretch")
-                elif game in locked:
-                    st.button("🔒 In progress", key=f"j{game}", disabled=True, width="stretch")
-                elif seats >= MAX_PER_GAME:
-                    st.button("Full, try another", key=f"j{game}", disabled=True, width="stretch")
-                elif st.button("Join", key=f"j{game}", disabled=bool(current) or not is_open,
-                               type="primary", width="stretch"):
+            here, done, started = game == current, game in played, game in locked
+            label, tag, tag_class, primary = "Join", "", "tag-neutral", True
+            disabled = bool(current) or not is_open
+            if here:
+                label, tag, tag_class, disabled = ("Playing now" if started else "Seated"), "You", "tag-accent", True
+            elif done:
+                label, tag, disabled, primary = "Played", "Done", True, False
+            elif started:
+                label, tag, tag_class, disabled, primary = "In progress", "Started", "tag-accent-2", True, False
+            elif seats >= MAX_PER_GAME:
+                label, disabled, primary = "Full, try another", True, False
+
+            with st.container(key=f"card-{game.replace(' ', '')}"):
+                html(
+                    f'<div class="card-head"><div class="card-title">{esc(game)}</div>'
+                    f'{f"<span class={chr(34)}tag {tag_class}{chr(34)}>{tag}</span>" if tag else ""}</div>'
+                    f'<div class="seatbar"><div style="width:{min(100, seats / MAX_PER_GAME * 100):.0f}%"></div></div>'
+                    f'<div style="font-size:12px;opacity:.65">{seats} of {MAX_PER_GAME} seats taken</div>'
+                )
+                can_leave = here and not started
+                cols = st.columns([3, 1]) if can_leave else [st.container()]
+                if cols[0].button(label, key=f"j{game}", disabled=disabled, width="stretch",
+                                  type="primary" if primary else "secondary"):
                     err = add_to_game(pid, game)
-                    st.error(err) if err else st.rerun()
+                    say(err) if err else st.rerun()
+                if can_leave and cols[1].button("Leave", key=f"l{game}", width="stretch"):
+                    err = leave_game(pid)
+                    say(err) if err else st.rerun()
 
     cards()
 
 
+def pin_form(form_key, label, expected, on_ok):
+    with st.form(form_key, border=False):
+        if label:
+            html(f'<div class="field-label">{esc(label)}</div>')
+        c1, c2 = st.columns([3, 1.3])
+        with c1:
+            pin = st.text_input("PIN", type="password", key="pin", placeholder="PIN" if not label else None,
+                                label_visibility="collapsed")
+        if c2.form_submit_button("Unlock", type="primary", width="stretch"):
+            if expected and pin == expected:
+                on_ok()
+                st.rerun()
+            say("Wrong PIN." if expected else "No PIN is set for this. Add it in the app's secrets.")
+
+
 def host_page():
-    st.title("🎮 Host Panel")
-    game = st.selectbox("Your game", GAMES)
-    pin = st.text_input("Host PIN", type="password")
-    if not HOST_PINS[game] or pin != HOST_PINS[game]:
-        st.warning("Enter your host PIN to manage this game.")
+    kicker("Host panel")
+    game = st.session_state.setdefault("host_game", GAMES[0])
+    authed = st.session_state.setdefault("host_auth", set())
+    for col, g in zip(st.columns(len(GAMES)), GAMES):
+        if col.button(g, key=f"ht-{g}", width="stretch", type="primary" if g == game else "secondary"):
+            st.session_state["host_game"] = g
+            st.rerun()
+
+    if game not in authed:
+        pin_form("host-pin", f"Host PIN for {game}", HOST_PINS[game], lambda: authed.add(game))
         return
 
-    is_open = event_open()
-    if not is_open:
-        st.warning("The event is closed: joining and scoring are paused.")
+    @st.fragment(run_every=REFRESH_SECONDS)
+    def status():
+        seated = int(query("SELECT COUNT(*) AS n FROM players WHERE current_game = ?", (game,))["n"][0])
+        started, is_open = game in locked_games(), event_open()
+        html(
+            '<div style="display:flex;justify-content:space-between;align-items:flex-end">'
+            f'<div class="display" style="font-size:30px">{esc(game)}</div>'
+            f'<div style="font-size:15px"><strong>{seated}</strong><span class="muted"> / {MAX_PER_GAME} seated</span></div></div>'
+        )
+        text = ("The event is closed. Joining and scoring are paused." if not is_open
+                else "Started. No one can join or leave." if started else "Open for players to join.")
+        html(f'<div class="lockline"><i class="ph-duotone {"ph-lock" if started else "ph-lock-open"}"></i>'
+             f'<span>{text}</span></div>')
+        # Locking stops new players joining (and current ones leaving) once the game is under way.
+        if st.button("Reopen for joining" if started else "Start game · lock seats", key="lock", width="stretch",
+                     type="secondary" if started else "primary"):
+            execute("UPDATE games SET locked = ? WHERE name = ?", (0 if started else 1, game))
+            st.rerun()
 
-    # Locking stops new players joining (and current ones leaving) once the game is under way.
-    if game in locked_games():
-        st.info(f"🔒 {game} has started. No one can join.")
-        if st.button("Reopen for joining"):
-            execute("UPDATE games SET locked = 0 WHERE name = ?", (game,))
-            st.rerun()
-    else:
-        st.info(f"🟢 {game} is open for players to join.")
-        if st.button("Start game (lock seats)", type="primary"):
-            execute("UPDATE games SET locked = 1 WHERE name = ?", (game,))
-            st.rerun()
+    status()
 
     # Add a player to this game, e.g. someone without a phone.
-    with st.form("add", clear_on_submit=True):
+    with st.form("add", clear_on_submit=True, border=False):
         c1, c2 = st.columns([3, 1])
-        raw = c1.text_input("Add player to your game", placeholder="Player name", max_chars=NAME_MAX)
-        if c2.form_submit_button("Add", width='stretch'):
+        with c1:
+            raw = st.text_input("Add player", placeholder="Add a player by name", max_chars=NAME_MAX,
+                                label_visibility="collapsed")
+        if c2.form_submit_button("Add", width="stretch"):
             name, _ = clean_name(raw)
             found = query("SELECT id FROM players WHERE name_key = ?", (name.lower(),))
             if found.empty:
@@ -372,136 +619,154 @@ def host_page():
             else:
                 pid, err = int(found["id"][0]), None
             err = err or add_to_game(pid, game)
-            st.error(err) if err else st.success(f"Added {name}. Their code is **{code_of(pid)}**")
+            say(err) if err else say(f"Added {name}. Their code is {code_of(pid)}.", ":material/person_add:", rerun=True)
 
     @st.fragment(run_every=REFRESH_SECONDS)
     def roster():
-        df = query(
-            "SELECT id, name, score, joined_at FROM players WHERE current_game = ? ORDER BY name", (game,)
-        )
-        st.subheader(f"Players in {game} right now ({len(df)}/{MAX_PER_GAME})")
+        df = query("SELECT id, name, score, joined_at FROM players WHERE current_game = ? ORDER BY name", (game,))
         if df.empty:
-            st.info("No players in your game.")
+            html('<div class="muted" style="font-size:15px">No players in your game yet.</div>')
             return
-
+        scoring_off = not event_open()
         for _, p in df.iterrows():
             pid = int(p["id"])
-            c1, c2, c3, c4, c5, c6 = st.columns([3, 1.2, 1.6, 1, 1.1, 1.1])
-            c1.markdown(f"**{p['name']}**  \n⏱ {minutes_since(p['joined_at'])} min")
-            c2.markdown(f"Score: **{p['score']}**")
-            delta = c3.number_input(
-                "points", value=1, step=1, key=f"d{pid}", label_visibility="collapsed"
+            html(
+                '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:8px">'
+                f'<div style="display:flex;flex-direction:column"><span style="font-size:18px;font-weight:600">{esc(p["name"])}</span>'
+                f'<span style="font-size:12px;opacity:.6">{minutes_since(p["joined_at"])} min at the table</span></div>'
+                f'<span class="display" style="font-size:30px">{int(p["score"])}</span></div>'
             )
+            cols = st.columns([1, 1, 1, 0.3, 1.5, 1.6])
             # Increment in SQL (score = score + ?) so two hosts never overwrite each other.
-            if c4.button("➕ Add", key=f"a{pid}", disabled=not is_open):
-                execute("UPDATE players SET score = score + ? WHERE id = ?", (delta, pid))
-                st.rerun()
-            if c5.button("✅ Finish", key=f"f{pid}", help="Played this game; can't join it again"):
+            for col, (label, delta, kind) in zip(cols, [("−1", -1, "secondary"), ("+1", 1, "primary"), ("+3", 3, "primary")]):
+                if col.button(label, key=f"s{delta}-{pid}", type=kind, disabled=scoring_off, width="stretch"):
+                    execute("UPDATE players SET score = score + ? WHERE id = ?", (delta, pid))
+                    st.rerun()
+            if cols[4].button("Finish", key=f"f{pid}", type="tertiary", help="Played this game; can't join it again"):
                 release("id = ?", (pid,), finished=True)
                 st.rerun()
-            if c6.button("Remove", key=f"r{pid}", help="Didn't play; can join this game again later"):
+            if cols[5].button("Remove", key=f"remove-{pid}", type="tertiary", help="Didn't play; can join this game again later"):
                 release("id = ?", (pid,), finished=False)
                 st.rerun()
 
-        if st.button("End round: finish everyone and reopen game", type="secondary"):
+        if st.button("End round · finish everyone", key="endround", width="stretch"):
             release("current_game = ?", (game,), finished=True)
             execute("UPDATE games SET locked = 0 WHERE name = ?", (game,))
-            st.rerun()
+            say(f"{game} finished for everyone and reopened.", ":material/check_circle:", rerun=True)
+        html('<div style="font-size:12px;opacity:.6;line-height:1.4">Finish marks the game as played. '
+             'Remove frees the seat without counting it.</div>')
 
     roster()
 
 
+def armed_button(label, confirm_label, key):
+    """A button that needs a second tap, so one stray tap can't wipe the event."""
+    armed = st.session_state.get("armed") == key
+    if st.button(confirm_label if armed else label, key=f"danger-{key}", width="stretch"):
+        if armed:
+            st.session_state.pop("armed")
+            return True
+        st.session_state["armed"] = key
+        st.rerun()
+    return False
+
+
 def admin_page():
-    st.title("🛠️ Admin")
-    if not ADMIN_PIN or st.text_input("Admin PIN", type="password") != ADMIN_PIN:
-        st.warning("Enter admin PIN.")
+    kicker("Organiser")
+    html('<div class="display" style="font-size:32px">Admin</div>')
+    if not st.session_state.get("admin_auth"):
+        pin_form("admin-pin", None, ADMIN_PIN, lambda: st.session_state.update(admin_auth=True))
         return
 
-    st.subheader("Event")
-    if event_open():
-        st.success("🟢 Open: players can join games and hosts can score.")
-        if st.button("Close event (freeze joining and scores)"):
-            execute("UPDATE settings SET value = '0' WHERE key = 'event_open'")
-            st.rerun()
-    else:
-        st.error("🔴 Closed: nobody can join and scores are frozen.")
-        if st.button("Open event", type="primary"):
-            execute("UPDATE settings SET value = '1' WHERE key = 'event_open'")
-            st.rerun()
+    is_open = event_open()
+    html(f'<div class="lockline" style="font-size:16px"><i class="ph-duotone {"ph-broadcast" if is_open else "ph-stop-circle"}" '
+         f'style="font-size:24px"></i><span>{"Open. Players can join and hosts can score." if is_open else "Closed. Joining and scores are frozen."}</span></div>')
+    if st.button("Close event" if is_open else "Open event", key="event", width="stretch",
+                 type="secondary" if is_open else "primary"):
+        execute("UPDATE settings SET value = ? WHERE key = 'event_open'", ("0" if is_open else "1",))
+        st.rerun()
 
-    st.subheader("Games")
     seated = query("SELECT id, name, current_game, joined_at FROM players "
                    "WHERE current_game IS NOT NULL ORDER BY joined_at")
     locked = locked_games()
-    st.dataframe(pd.DataFrame({
-        "Game": GAMES,
-        "Players": [int((seated["current_game"] == g).sum()) for g in GAMES],
-        "Status": ["🔒 Started" if g in locked else "🟢 Open" for g in GAMES],
-    }), hide_index=True)
+    rows = "".join(
+        f'<tr><td>{g}</td><td style="opacity:.7">{"Started" if g in locked else "Open"}</td>'
+        f'<td class="num" style="font-weight:600">{int((seated["current_game"] == g).sum())}/{MAX_PER_GAME}</td></tr>'
+        for g in GAMES
+    )
+    html(f'<div class="display" style="font-size:20px;margin-top:10px">Games</div><table class="table"><tbody>{rows}</tbody></table>')
 
-    st.subheader("Players in a game")
-    st.caption("Longest-seated first, so anyone a host forgot to release shows up at the top.")
+    html('<div class="display" style="font-size:20px;margin-top:10px">Seated players</div>'
+         '<div class="hint">Longest at a table first, so anyone a host forgot to release is on top.</div>')
     if seated.empty:
-        st.write("Nobody is in a game.")
+        html('<div class="muted" style="font-size:15px">Nobody is in a game.</div>')
     for _, p in seated.iterrows():
-        pid = int(p["id"])
-        c1, c2, c3 = st.columns([4, 1, 1])
-        c1.write(f"**{p['name']}** in {p['current_game']} · ⏱ {minutes_since(p['joined_at'])} min")
-        if c2.button("✅ Finish", key=f"af{pid}"):
+        pid, mins = int(p["id"]), minutes_since(p["joined_at"])
+        c1, c2, c3 = st.columns([3.4, 1.2, 1.4])
+        with c1:
+            stale = '<span class="tag tag-accent-2">Stale</span>' if mins >= STALE_MINUTES else ""
+            html(f'<div style="display:flex;align-items:center;gap:8px"><div style="flex:1;display:flex;flex-direction:column">'
+                 f'<span style="font-size:16px;font-weight:600">{esc(p["name"])}</span>'
+                 f'<span style="font-size:12px;opacity:.65">{esc(p["current_game"])} · {mins} min</span></div>{stale}</div>')
+        if c2.button("Finish", key=f"af{pid}", type="tertiary"):
             release("id = ?", (pid,), finished=True)
             st.rerun()
-        if c3.button("Remove", key=f"ar{pid}"):
+        if c3.button("Remove", key=f"remove-a{pid}", type="tertiary"):
             release("id = ?", (pid,), finished=False)
             st.rerun()
 
-    st.subheader("Player tools")
+    html('<div class="display" style="font-size:20px;margin-top:10px">Player tools</div>')
     players = query("SELECT id, name, score, current_game, token FROM players ORDER BY name")
     if players.empty:
-        st.write("No players yet.")
+        html('<div class="muted" style="font-size:15px">No players yet.</div>')
     else:
         names = dict(zip(players["id"], players["name"]))
-        pid = int(st.selectbox("Player", list(names), format_func=names.get))
+        pid = int(st.selectbox("Player", list(names), format_func=names.get, label_visibility="collapsed"))
         p = players[players["id"] == pid].iloc[0]
         played = query("SELECT game FROM played WHERE player_id = ? ORDER BY game", (pid,))["game"]
-        st.write(f"Code **{p['token']}** · score **{p['score']}** · "
-                 f"now in **{p['current_game'] if isinstance(p['current_game'], str) else '—'}** · "
-                 f"played: {', '.join(played) or 'none'}")
+        now = p["current_game"] if isinstance(p["current_game"], str) else "—"
+        html(f'<div style="font-size:14px;opacity:.8">Code <strong style="letter-spacing:.1em">{esc(p["token"])}</strong> · '
+             f'{int(p["score"])} pts · now in {esc(now)} · played: {esc(", ".join(played) or "none")}</div>')
 
-        c1, c2 = st.columns([3, 1])
-        raw = c1.text_input("Rename to", key=f"rename{pid}", max_chars=NAME_MAX)
-        if c2.button("Rename", width="stretch"):
-            name, err = clean_name(raw)
-            if not err:
-                try:
-                    execute("UPDATE players SET name = ?, name_key = ? WHERE id = ?", (name, name.lower(), pid))
-                except IntegrityError:
-                    err = f'"{name}" is already taken.'
-            st.error(err) if err else st.rerun()
+        with st.form(f"rename-{pid}", border=False):
+            c1, c2 = st.columns([3, 1.3])
+            with c1:
+                raw = st.text_input("Rename to", placeholder="Rename to", max_chars=NAME_MAX, label_visibility="collapsed")
+            if c2.form_submit_button("Rename", width="stretch"):
+                name, err = clean_name(raw)
+                if not err:
+                    try:
+                        execute("UPDATE players SET name = ?, name_key = ? WHERE id = ?", (name, name.lower(), pid))
+                    except IntegrityError:
+                        err = f'"{name}" is already taken.'
+                say(err) if err else st.rerun()
 
-        c1, c2 = st.columns([3, 1])
-        game = c1.selectbox("Seat in", GAMES, key="admin_game")
+        c1, c2 = st.columns([3, 1.3])
+        game = c1.selectbox("Seat in", GAMES, key="admin_game", label_visibility="collapsed")
         if c2.button("Seat", width="stretch"):
             err = add_to_game(pid, game)
-            st.error(err) if err else st.success(f"{p['name']} → {game}")
+            say(err) if err else say(f"{p['name']} → {game}", ":material/check_circle:", rerun=True)
 
-        if st.checkbox(f"I want to delete {p['name']}", key=f"del{pid}"):
-            if st.button(f"Delete {p['name']}", type="primary"):
-                execute("DELETE FROM played WHERE player_id = ?", (pid,))
-                execute("DELETE FROM players WHERE id = ?", (pid,))
-                st.rerun()
+        if armed_button(f"Delete {p['name']}", f"Tap again to delete {p['name']}", f"del{pid}"):
+            execute("DELETE FROM played WHERE player_id = ?", (pid,))
+            execute("DELETE FROM players WHERE id = ?", (pid,))
+            say(f"Deleted {p['name']}.", ":material/check_circle:", rerun=True)
 
-    with st.expander("Danger zone"):
-        if st.button("Reset ALL scores to 0"):
-            execute("UPDATE players SET score = 0")
-            st.success("Scores reset.")
-        if st.button("Delete ALL players"):
-            execute("DELETE FROM played")
-            execute("DELETE FROM players")
-            st.success("All players deleted.")
+    html('<div class="display" style="font-size:20px;margin-top:10px;color:var(--color-accent-2-700)">Danger zone</div>')
+    if armed_button("Reset all scores to 0", "Tap again to reset every score", "reset"):
+        execute("UPDATE players SET score = 0")
+        say("All scores reset.", ":material/check_circle:", rerun=True)
+    if armed_button("Delete all players", "Tap again to delete every player", "wipe"):
+        execute("DELETE FROM played")
+        execute("DELETE FROM players")
+        say("All players deleted.", ":material/check_circle:", rerun=True)
 
 
 # ---------- main ----------
-st.set_page_config(page_title="Game Event", page_icon="🏆", layout="wide")
+st.set_page_config(page_title="Game Event", page_icon="🏆", layout="centered", initial_sidebar_state="collapsed")
+html(CSS)
 init_db()
-pages = {"Player": player_page, "Leaderboard": leaderboard_page, "Host": host_page, "Admin": admin_page}
-pages[st.sidebar.radio("View", list(pages))]()
+for message, icon in st.session_state.pop("toasts", []):
+    st.toast(message, icon=icon)
+view = tab_bar()
+{"player": player_page, "board": leaderboard_page, "host": host_page, "admin": admin_page}[view]()
